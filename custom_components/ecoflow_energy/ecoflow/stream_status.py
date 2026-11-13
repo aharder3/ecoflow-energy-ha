@@ -16,7 +16,9 @@ them safe to show and to control:
   Stream AC Pro: field 4 equals 1 for a plan that is switched on and is absent
   for one that is switched off, and field 5 equals 1 while the plan's window is
   running. A charge plan carries device targets; a discharge plan (the custom
-  discharge of the app) has none.
+  discharge of the app) has none, and carries its power in field 12 (790 W in
+  the app matched 790 in that field). Field 8 was 0 for a plan the app showed
+  as "daily" and 4 for plans it showed with a date.
 """
 
 from __future__ import annotations
@@ -119,6 +121,8 @@ def _decode_plan(task: bytes) -> dict[str, Any] | None:
         "source": "grid_and_solar" if grid else "solar",
         "soc": first.get(2),
         "power": first.get(3),
+        "discharge_power": flags.get(12) or None,
+        "repeat": "daily" if flags.get(8) == 0 else "dated",
     }
 
 

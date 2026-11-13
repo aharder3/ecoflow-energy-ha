@@ -1,4 +1,4 @@
-"""Native Stream controls (BK-series): operating mode and charge plans.
+"""Native Stream controls (BK-series): operating mode and plans.
 
 Created once per config entry, on the first Stream device with an app-channel
 connection. Everything shown here is read back from the device
@@ -11,16 +11,19 @@ connection. Everything shown here is read back from the device
 - For each charge plan the device reports (field 584): a switch for its
   on/off state, and selects for its start, stop and source. Entities appear
   when a plan appears in the report and report unavailable when it leaves it.
-  Discharge plans are not touched.
+- For each discharge plan: one read-only switch showing whether it is on, with
+  start, stop, power, repeat and running as attributes. Discharge plans are
+  only shown; turning one on or off from here is refused.
 
 The device numbers its plans across charge and discharge plans, and the vendor
 app does not show those numbers. The entities are therefore named by position:
-the first reported charge plan is "Plan 1", the next "Plan 2". Unique IDs keep
-the device number, so a name can move when an earlier plan is deleted but no
+the first reported charge plan is "Plan 1", the next "Plan 2"; discharge plans
+are counted the same way as "Discharge plan 1" and so on. Unique IDs keep the
+device number, so a name can move when an earlier plan is deleted but no
 entity is replaced.
 
-Changing a plan sends the plan again with the reported values, changing only
-what the user changed. Switching a plan on first switches to custom mode,
+Changing a charge plan sends the plan again with the reported values, changing
+only what the user changed. Switching a plan on first switches to custom mode,
 because plans only run there. A plan is sent with flag 4 set when it is on and
 without it when it is off, which is what the vendor app does. Plans are only
 changed, never created or deleted.
@@ -88,7 +91,11 @@ class StreamControls:
         self.coordinator = coordinator
         self.serial: str = coordinator.device_sn
         self.serials = serials
-        self.created: dict[str, set[int]] = {"select": set(), "switch": set()}
+        self.created: dict[str, set[int]] = {
+            "select": set(),
+            "switch": set(),
+            "discharge": set(),
+        }
 
     @property
     def mode(self) -> str | None:
@@ -96,9 +103,7 @@ class StreamControls:
         value = (self.coordinator.data or {}).get("operating_mode")
         return value if isinstance(value, str) else None
 
-    @property
-    def plans(self) -> dict[int, dict[str, Any]]:
-        """Return the reported charge plans by number."""
+    def _plans_of_kind(self, kind: str) -> dict[int, dict[str, Any]]:
         reported = (self.coordinator.data or {}).get("stream_plans")
         if not isinstance(reported, list):
             return {}
@@ -106,13 +111,28 @@ class StreamControls:
             plan["id"]: plan
             for plan in reported
             if isinstance(plan, dict)
-            and plan.get("kind") == "charge"
+            and plan.get("kind") == kind
             and isinstance(plan.get("id"), int)
         }
+
+    @property
+    def plans(self) -> dict[int, dict[str, Any]]:
+        """Return the reported charge plans by number."""
+        return self._plans_of_kind("charge")
+
+    @property
+    def discharge_plans(self) -> dict[int, dict[str, Any]]:
+        """Return the reported discharge plans by number."""
+        return self._plans_of_kind("discharge")
 
     def plan_rank(self, plan_id: int) -> int | None:
         """Return the position of a reported charge plan, counted from 1."""
         numbers = sorted(self.plans)
+        return numbers.index(plan_id) + 1 if plan_id in numbers else None
+
+    def discharge_rank(self, plan_id: int) -> int | None:
+        """Return the position of a reported discharge plan, counted from 1."""
+        numbers = sorted(self.discharge_plans)
         return numbers.index(plan_id) + 1 if plan_id in numbers else None
 
     async def _send(self, frame: bytes) -> None:
@@ -311,6 +331,65 @@ class StreamPlanSwitch(_StreamPlanEntity, SwitchEntity):
         await self._controls.async_change_plan(self._plan_id, enabled=False)
 
 
+class StreamDischargeSwitch(_StreamEntity, SwitchEntity):
+    """One reported discharge plan, shown but not controlled."""
+
+    def __init__(self, controls: StreamControls, plan_id: int) -> None:
+        super().__init__(
+            controls,
+            f"discharge{plan_id}_enabled",
+            "Discharge plan",
+            "mdi:battery-arrow-down",
+        )
+        self._plan_id = plan_id
+        self._last_rank = controls.discharge_rank(plan_id) or plan_id
+
+    @property
+    def name(self) -> str:
+        """Name by position among the reported discharge plans."""
+        rank = self._controls.discharge_rank(self._plan_id)
+        if rank is not None:
+            self._last_rank = rank
+        return f"Discharge plan {self._last_rank}"
+
+    @property
+    def _plan(self) -> dict[str, Any] | None:
+        return self._controls.discharge_plans.get(self._plan_id)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._plan is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        plan = self._plan
+        return None if plan is None else bool(plan["enabled"])
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        plan = self._plan
+        if plan is None:
+            return None
+        return {
+            "start": plan["start"],
+            "stop": plan["end"],
+            "power_w": plan.get("discharge_power"),
+            "repeat": plan.get("repeat"),
+            "running": bool(plan["running"]),
+            "read_only": True,
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        raise ServiceValidationError(
+            "Discharge plans are shown here but cannot be changed from Home Assistant"
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        raise ServiceValidationError(
+            "Discharge plans are shown here but cannot be changed from Home Assistant"
+        )
+
+
 def _hub_for(hass: HomeAssistant, coordinators: dict[str, Any]) -> StreamControls | None:
     """Return the hub of the first Stream device on the app channel."""
     streams = [
@@ -331,13 +410,17 @@ def _hub_for(hass: HomeAssistant, coordinators: dict[str, Any]) -> StreamControl
 
 
 def _follow_plans(
-    hub: StreamControls, kind: str, factory: Callable[[int], list[Entity]]
+    hub: StreamControls,
+    kind: str,
+    factory: Callable[[int], list[Entity]],
+    plans_of: Callable[[], dict[int, dict[str, Any]]] | None = None,
 ) -> list[Entity]:
     """Return the entities of the plans reported now and add later ones as they appear."""
     platform = entity_platform.async_get_current_platform()
 
     def _new_entities() -> list[Entity]:
-        fresh = [plan_id for plan_id in sorted(hub.plans) if plan_id not in hub.created[kind]]
+        reported = plans_of() if plans_of is not None else hub.plans
+        fresh = [plan_id for plan_id in sorted(reported) if plan_id not in hub.created[kind]]
         hub.created[kind].update(fresh)
         return [entity for plan_id in fresh for entity in factory(plan_id)]
 
@@ -374,11 +457,19 @@ def build_stream_controls(
 def build_stream_switches(
     hass: HomeAssistant, coordinators: dict[str, Any]
 ) -> list[SwitchEntity]:
-    """Return the switch of each reported charge plan."""
+    """Return the switch of each reported charge plan and each discharge plan."""
     hub = _hub_for(hass, coordinators)
     if hub is None:
         return []
     entities = _follow_plans(
         hub, "switch", lambda plan_id: [StreamPlanSwitch(hub, plan_id)]
+    )
+    entities.extend(
+        _follow_plans(
+            hub,
+            "discharge",
+            lambda plan_id: [StreamDischargeSwitch(hub, plan_id)],
+            plans_of=lambda: hub.discharge_plans,
+        )
     )
     return [entity for entity in entities if isinstance(entity, SwitchEntity)]
