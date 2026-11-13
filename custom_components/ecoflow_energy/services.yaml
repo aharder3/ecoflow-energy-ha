@@ -1,0 +1,78 @@
+send_stream_schedule:
+  fields:
+    serial:
+      required: true
+      example: BK11XXXXXXXXXXXX
+      selector:
+        text:
+    serials:
+      required: false
+      example: "BK11XXXXXXXXXXXX"
+      selector:
+        text:
+          multiple: true
+    plan_id:
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          mode: box
+    start:
+      required: true
+      example: "14:30"
+      selector:
+        text:
+    end:
+      required: true
+      example: "19:00"
+      selector:
+        text:
+    source:
+      required: true
+      selector:
+        select:
+          options:
+            - solar
+            - grid_and_solar
+    soc:
+      required: false
+      default: 95
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+          mode: box
+    power:
+      required: false
+      default: 1050
+      selector:
+        number:
+          min: 1
+          unit_of_measurement: W
+          mode: box
+    operation:
+      required: false
+      default: change
+      selector:
+        select:
+          options:
+            - change
+            - create
+
+set_stream_mode:
+  fields:
+    serial:
+      required: true
+      example: BK11XXXXXXXXXXXX
+      selector:
+        text:
+    mode:
+      required: true
+      selector:
+        select:
+          options:
+            - self_powered
+            - custom
+            - ai
