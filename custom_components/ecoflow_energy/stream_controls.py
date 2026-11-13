@@ -10,7 +10,7 @@ connection. Everything shown here is read back from the device
   devices of a pair.
 - For each charge plan the device reports (field 584): a switch for its
   on/off state, selects for its start, stop, source and repeat (daily, weekly,
-  once), and one switch per weekday.
+  once), and a text field for its weekdays ("MO-FR", "MO;DI;DO").
 - For each discharge plan: the same, without the source. The power of the plan
   is shown as an attribute and sent back unchanged.
 
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Callable
 from functools import partial
@@ -49,14 +50,17 @@ from typing import Any
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.text import TextEntity, TextMode
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_platform
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_TYPE_STREAM
+from .const import DEVICE_TYPE_STREAM, DOMAIN
+from .ecoflow.stream_days import TEXT_PATTERN, format_days, parse_days
 from .ecoflow.stream_discharge import build_discharge_request_frame
 from .ecoflow.stream_mode import build_mode_frame
 from .ecoflow.stream_schedule_request import build_schedule_request_frame
@@ -88,10 +92,12 @@ REPEAT_LABELS = {
     "weekly": "Weekly",
     "once": "Once",
 }
-DAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _TIMES = [f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 30)]
 START_OPTIONS = _TIMES
 END_OPTIONS = [*_TIMES, "24:00"]
+
+# The seven weekday switches of an earlier version, replaced by the text field.
+_WEEKDAY_SWITCH_ID = re.compile(r"_stream_(plan|discharge)\d+_day[0-6]$")
 
 _HUBS: dict[str, StreamControls] = {}
 
@@ -143,8 +149,10 @@ class StreamControls:
         self.created: dict[str, set[int]] = {
             "select": set(),
             "switch": set(),
+            "text": set(),
             "discharge_select": set(),
             "discharge": set(),
+            "discharge_text": set(),
         }
 
     @property
@@ -273,7 +281,7 @@ class StreamControls:
 
 
 class _StreamEntity(CoordinatorEntity):
-    """Common parts of the select and switch entities."""
+    """Common parts of the select, switch and text entities."""
 
     _attr_has_entity_name = True
 
@@ -430,7 +438,11 @@ class StreamPlanSwitch(_StreamPlanEntity, SwitchEntity):
         plan = self._plan
         if plan is None:
             return None
-        attributes: dict[str, Any] = {"running": bool(plan["running"])}
+        attributes: dict[str, Any] = {
+            "running": bool(plan["running"]),
+            "repeat": plan["repeat"],
+            "days": plan["days"],
+        }
         if self._plan_kind == KIND_DISCHARGE:
             attributes["power_w"] = plan.get("discharge_power")
         return attributes
@@ -446,34 +458,34 @@ class StreamPlanSwitch(_StreamPlanEntity, SwitchEntity):
         )
 
 
-class StreamPlanDaySwitch(_StreamPlanEntity, SwitchEntity):
-    """One weekday of a reported plan."""
+class StreamPlanDaysText(_StreamPlanEntity, TextEntity):
+    """The weekdays of one reported plan, typed as MO-FR or MO;DI;DO."""
+
+    _attr_mode = TextMode.TEXT
+    _attr_native_min = 2
+    _attr_native_max = 40
+    _attr_pattern = TEXT_PATTERN
 
     def __init__(
-        self,
-        controls: StreamControls,
-        plan_id: int,
-        index: int,
-        plan_kind: str = KIND_CHARGE,
+        self, controls: StreamControls, plan_id: int, plan_kind: str = KIND_CHARGE
     ) -> None:
         super().__init__(
-            controls,
-            plan_id,
-            f"day{index}",
-            DAY_LABELS[index],
-            "mdi:calendar-today",
-            plan_kind,
+            controls, plan_id, "days", "days", "mdi:calendar-week", plan_kind
         )
-        self._index = index
 
     @property
-    def is_on(self) -> bool | None:
+    def native_value(self) -> str | None:
         plan = self._plan
         if plan is None:
             return None
-        return DAY_NAMES[self._index] in plan["days"]
+        return format_days(plan["days"])
 
-    async def _set_day(self, on: bool) -> None:
+    async def async_set_value(self, value: str) -> None:
+        days = parse_days(value)
+        if days is None:
+            raise ServiceValidationError(
+                "Use days like MO-FR, MO;DI;DO or MO-MI;SA (MO, DI, MI, DO, FR, SA, SO)"
+            )
         plan = self._plan
         if plan is None:
             raise ServiceValidationError("The plan is not reported by the device")
@@ -481,21 +493,9 @@ class StreamPlanDaySwitch(_StreamPlanEntity, SwitchEntity):
             raise ServiceValidationError(
                 "This plan runs once; choose Daily or Weekly first"
             )
-        days = set(plan["days"])
-        if on:
-            days.add(DAY_NAMES[self._index])
-        else:
-            days.discard(DAY_NAMES[self._index])
-        ordered = [day for day in DAY_NAMES if day in days]
         await self._controls.async_change_plan(
-            self._plan_id, plan_kind=self._plan_kind, days=ordered
+            self._plan_id, plan_kind=self._plan_kind, days=days
         )
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        await self._set_day(True)
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        await self._set_day(False)
 
 
 def _hub_for(hass: HomeAssistant, coordinators: dict[str, Any]) -> StreamControls | None:
@@ -541,6 +541,19 @@ def _follow_plans(
     return _new_entities()
 
 
+def _remove_weekday_switches(hass: HomeAssistant, serial: str) -> None:
+    """Remove the registry entries of the weekday switches an earlier version created."""
+    registry = er.async_get(hass)
+    for entry in list(registry.entities.values()):
+        if (
+            entry.platform == DOMAIN
+            and entry.domain == "switch"
+            and entry.unique_id.startswith(f"{serial}_stream_")
+            and _WEEKDAY_SWITCH_ID.search(entry.unique_id)
+        ):
+            registry.async_remove(entry.entity_id)
+
+
 def build_stream_controls(
     hass: HomeAssistant, coordinators: dict[str, Any]
 ) -> list[SelectEntity]:
@@ -576,30 +589,41 @@ def build_stream_controls(
 def build_stream_switches(
     hass: HomeAssistant, coordinators: dict[str, Any]
 ) -> list[SwitchEntity]:
-    """Return the switches of each reported plan."""
+    """Return the on/off switch of each reported plan."""
     hub = _hub_for(hass, coordinators)
     if hub is None:
         return []
+    _remove_weekday_switches(hass, hub.serial)
     entities = _follow_plans(
-        hub,
-        "switch",
-        lambda plan_id: [
-            StreamPlanSwitch(hub, plan_id),
-            *[StreamPlanDaySwitch(hub, plan_id, index) for index in range(7)],
-        ],
+        hub, "switch", lambda plan_id: [StreamPlanSwitch(hub, plan_id)]
     )
     entities.extend(
         _follow_plans(
             hub,
             "discharge",
-            lambda plan_id: [
-                StreamPlanSwitch(hub, plan_id, KIND_DISCHARGE),
-                *[
-                    StreamPlanDaySwitch(hub, plan_id, index, KIND_DISCHARGE)
-                    for index in range(7)
-                ],
-            ],
+            lambda plan_id: [StreamPlanSwitch(hub, plan_id, KIND_DISCHARGE)],
             plans_of=lambda: hub.discharge_plans,
         )
     )
     return [entity for entity in entities if isinstance(entity, SwitchEntity)]
+
+
+def build_stream_texts(
+    hass: HomeAssistant, coordinators: dict[str, Any]
+) -> list[TextEntity]:
+    """Return the weekday text field of each reported plan."""
+    hub = _hub_for(hass, coordinators)
+    if hub is None:
+        return []
+    entities = _follow_plans(
+        hub, "text", lambda plan_id: [StreamPlanDaysText(hub, plan_id)]
+    )
+    entities.extend(
+        _follow_plans(
+            hub,
+            "discharge_text",
+            lambda plan_id: [StreamPlanDaysText(hub, plan_id, KIND_DISCHARGE)],
+            plans_of=lambda: hub.discharge_plans,
+        )
+    )
+    return [entity for entity in entities if isinstance(entity, TextEntity)]
