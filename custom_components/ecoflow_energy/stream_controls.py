@@ -13,6 +13,12 @@ connection. Everything shown here is read back from the device
   when a plan appears in the report and report unavailable when it leaves it.
   Discharge plans are not touched.
 
+The device numbers its plans across charge and discharge plans, and the vendor
+app does not show those numbers. The entities are therefore named by position:
+the first reported charge plan is "Plan 1", the next "Plan 2". Unique IDs keep
+the device number, so a name can move when an earlier plan is deleted but no
+entity is replaced.
+
 Changing a plan sends the plan again with the reported values, changing only
 what the user changed. Switching a plan on first switches to custom mode,
 because plans only run there. A plan is sent with flag 4 set when it is on and
@@ -103,6 +109,11 @@ class StreamControls:
             and plan.get("kind") == "charge"
             and isinstance(plan.get("id"), int)
         }
+
+    def plan_rank(self, plan_id: int) -> int | None:
+        """Return the position of a reported charge plan, counted from 1."""
+        numbers = sorted(self.plans)
+        return numbers.index(plan_id) + 1 if plan_id in numbers else None
 
     async def _send(self, frame: bytes) -> None:
         client = getattr(self.coordinator, "mqtt_client", None)
@@ -205,10 +216,26 @@ class StreamModeSelect(_StreamEntity, SelectEntity):
 
 class _StreamPlanEntity(_StreamEntity):
     def __init__(
-        self, controls: StreamControls, plan_id: int, part: str, name: str, icon: str
+        self,
+        controls: StreamControls,
+        plan_id: int,
+        part: str,
+        label: str,
+        icon: str,
     ) -> None:
-        super().__init__(controls, f"plan{plan_id}_{part}", name, icon)
+        super().__init__(controls, f"plan{plan_id}_{part}", label, icon)
         self._plan_id = plan_id
+        self._label = label
+        self._last_rank = controls.plan_rank(plan_id) or plan_id
+
+    @property
+    def name(self) -> str:
+        """Name by position among the reported charge plans, not by device number."""
+        rank = self._controls.plan_rank(self._plan_id)
+        if rank is not None:
+            self._last_rank = rank
+        base = f"Plan {self._last_rank}"
+        return f"{base} {self._label}" if self._label else base
 
     @property
     def _plan(self) -> dict[str, Any] | None:
@@ -236,7 +263,7 @@ class StreamPlanSelect(_StreamPlanEntity, SelectEntity):
         # Entities are listed alphabetically by name, so "stop" keeps the end
         # select behind "start".
         label = {"start": "start", "end": "stop", "source": "source"}[part]
-        super().__init__(controls, plan_id, part, f"Plan {plan_id} {label}", icon)
+        super().__init__(controls, plan_id, part, label, icon)
         self._part = part
         self._attr_options = list(options)
 
@@ -265,9 +292,7 @@ class StreamPlanSwitch(_StreamPlanEntity, SwitchEntity):
     """On or off state of one reported charge plan."""
 
     def __init__(self, controls: StreamControls, plan_id: int) -> None:
-        super().__init__(
-            controls, plan_id, "enabled", f"Plan {plan_id}", "mdi:calendar-clock"
-        )
+        super().__init__(controls, plan_id, "enabled", "", "mdi:calendar-clock")
 
     @property
     def is_on(self) -> bool | None:
