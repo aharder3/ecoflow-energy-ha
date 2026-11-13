@@ -43,6 +43,7 @@ from .const import (
     DEVICE_TYPE_DISPLAY_NAMES,
     DEVICE_TYPE_POWERPULSE2,
     DEVICE_TYPE_POWERSTREAM,
+    DEVICE_TYPE_STREAM,
     DEVICE_TYPE_UNKNOWN,
     ENHANCED_ONLY_DEVICE_TYPES,
     MODE_ENHANCED,
@@ -55,6 +56,7 @@ from .const import (
 )
 from .ecoflow.enhanced_auth import enhanced_login, get_app_device_list
 from .ecoflow.iot_api import IoTApiClient
+from .stream_plans import CONF_STREAM_PLAN_IDS, format_plan_ids, parse_plan_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -197,6 +199,16 @@ class OptionsFlowMixin(_Base):
             new_mode = user_input.get(CONF_MODE, current_mode)
             selected_sns = user_input.get(CONF_DEVICES, current_device_sns)
 
+            # The plan numbers of the Stream charge plans. Empty text is a
+            # valid answer (no plan entities); text that is not a list of
+            # numbers is refused before anything is saved.
+            raw_plan_ids = user_input.get(CONF_STREAM_PLAN_IDS)
+            plan_ids = (
+                parse_plan_ids(raw_plan_ids) if isinstance(raw_plan_ids, str) else None
+            )
+            if isinstance(raw_plan_ids, str):
+                self._pending_stream_plan_ids = plan_ids
+
             known_devices = {
                 d["sn"]: d
                 for d in (
@@ -213,7 +225,9 @@ class OptionsFlowMixin(_Base):
                 for sn in selected_sns
             )
 
-            if not selected_sns:
+            if isinstance(raw_plan_ids, str) and plan_ids is None:
+                errors["base"] = "invalid_plan_ids"
+            elif not selected_sns:
                 errors["base"] = "no_devices"
             elif any(
                 serial_in_other_entries(
@@ -334,6 +348,20 @@ class OptionsFlowMixin(_Base):
                         default=self.config_entry.data.get(CONF_VEHICLE_ENERGY, False),
                     )
                 ] = bool
+            # The Stream cannot report its plan list, so the numbers of its
+            # charge plans are entered here. Empty means no plan entities.
+            if any(
+                self._stored_device_type(stored_devices, sn) == DEVICE_TYPE_STREAM
+                for sn in current_device_sns
+            ):
+                schema[
+                    vol.Optional(
+                        CONF_STREAM_PLAN_IDS,
+                        default=format_plan_ids(
+                            self.config_entry.data.get(CONF_STREAM_PLAN_IDS, [])
+                        ),
+                    )
+                ] = str
             schema[
                 vol.Required(
                     CONF_RAW_CAPTURE,
@@ -486,6 +514,9 @@ class OptionsFlowMixin(_Base):
         new_data[CONF_MODE] = mode
         new_data[CONF_DEVICES] = selected_devices
         self._apply_raw_capture(new_data)
+        stream_plan_ids = getattr(self, "_pending_stream_plan_ids", None)
+        if stream_plan_ids is not None:
+            new_data[CONF_STREAM_PLAN_IDS] = stream_plan_ids
         wanted = self._pending_vehicle_energy
         new_data[CONF_VEHICLE_ENERGY] = bool(
             mode == MODE_ENHANCED

@@ -1,18 +1,24 @@
-"""Native Stream controls (BK-series): operating mode and three charge plans.
+"""Native Stream controls (BK-series): operating mode and the charge plans.
 
 Created once per config entry, on the first Stream device with an app-channel
 connection:
 
 - Operating mode (select): self-powered, custom, AI (``106 { <mode>: 1 }``,
   see ``ecoflow/stream_mode.py``). The setting applies to both devices of a pair.
-- For each of the plans 2, 3 and 4: a switch that activates the plan, and
-  selects for its start, end and source (solar only, or grid and solar).
+- For each plan number the user entered in the integration's options: a switch
+  that activates the plan, and selects for its start, stop and source (solar
+  only, or grid and solar).
+
+The device does not report its plan list, so the plan numbers cannot be found
+out and none are assumed: with nothing entered, only the mode select exists.
+The numbers are shared between charge and discharge plans in the vendor app,
+which is why a guessed number could overwrite a plan of another kind. Enter
+only the numbers of existing charge plans.
 
 Switching a plan on first switches to custom mode, then sends the plan with
 flag 4 set; switching it off sends the same plan without flag 4, which is what
-the vendor app does. Changing start, end or source of a plan that is on sends
-the plan again. Plan 4 is created on its first activation; plans 2 and 3 are
-changed. Other plans (the discharge plans, for one) are never touched.
+the vendor app does. Changing start, stop or source of a plan that is on sends
+the plan again. Plans are only ever changed, never created.
 
 The device reports neither the mode nor the plan state back, so every entity
 shows the value last sent from Home Assistant and restores it after a restart.
@@ -35,16 +41,14 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_TYPE_STREAM
+from .const import DEVICE_TYPE_STREAM, DOMAIN
 from .ecoflow.stream_mode import build_mode_frame
 from .ecoflow.stream_schedule_request import build_schedule_request_frame
 from .schedule_service import _next_sequence
+from .stream_plans import CONF_STREAM_PLAN_IDS
 
 _LOGGER = logging.getLogger(__name__)
 
-PLAN_IDS = (2, 3, 4)
-# Plans the app may not have yet: the first activation creates them.
-CREATE_FIRST = frozenset({4})
 PLAN_SOC_PCT = 95
 PLAN_POWER_W = 1050
 MODE_SWITCH_PAUSE_S = 2.0
@@ -80,7 +84,6 @@ class StreamControls:
         self.serial: str = coordinator.device_sn
         self.serials = serials
         self.entities: dict[str, Any] = {}
-        self.created: set[int] = set()
 
     def _show(self, key: str, value: Any) -> None:
         entity = self.entities.get(key)
@@ -119,18 +122,15 @@ class StreamControls:
         start, end, label = values
         if start is None or end is None or label is None:
             raise ServiceValidationError(
-                f"Choose start, end and source of plan {plan} first"
+                f"Choose start, stop and source of plan {plan} first"
             )
         if start == end:
-            raise ServiceValidationError(f"Start and end of plan {plan} are equal")
+            raise ServiceValidationError(f"Start and stop of plan {plan} are equal")
         return start, end, _key_for(SOURCE_LABELS, label)
 
     async def async_send_plan(self, plan: int, enabled: bool) -> None:
         """Send one plan with the values the entities hold."""
         start, end, source = self._plan_values(plan)
-        operation = (
-            "create" if plan in CREATE_FIRST and plan not in self.created else "change"
-        )
         try:
             frame = build_schedule_request_frame(
                 header_serial=self.serial,
@@ -143,20 +143,18 @@ class StreamControls:
                 power_w=PLAN_POWER_W,
                 sequence=_next_sequence(),
                 timestamp=int(time.time()),
-                operation=operation,
+                operation="change",
                 flag4=1 if enabled else None,
             )
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
         await self._send(frame)
-        self.created.add(plan)
         _LOGGER.info(
-            "Stream plan %s sent: %s-%s (%s, %s, %s)",
+            "Stream plan %s sent: %s-%s (%s, %s)",
             plan,
             start,
             end,
             source,
-            operation,
             "on" if enabled else "off",
         )
 
@@ -285,18 +283,12 @@ class StreamPlanSwitch(_StreamEntity, SwitchEntity, RestoreEntity):
     def is_on(self) -> bool | None:
         return self._on
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return {"plan_created": self._plan in self._controls.created}
-
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self._controls.entities[self._key] = self
         last = await self.async_get_last_state()
         if last is not None and last.state in ("on", "off"):
             self._on = last.state == "on"
-            if last.attributes.get("plan_created"):
-                self._controls.created.add(self._plan)
 
     @callback
     def show(self, value: bool) -> None:
@@ -329,16 +321,27 @@ def _hub_for(hass: HomeAssistant, coordinators: dict[str, Any]) -> StreamControl
     return hub
 
 
+def _plan_ids(hass: HomeAssistant, coordinators: dict[str, Any]) -> list[int]:
+    """Return the plan numbers the user entered in this entry's options."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if hass.data.get(DOMAIN, {}).get(entry.entry_id) is coordinators:
+            ids = entry.data.get(CONF_STREAM_PLAN_IDS, [])
+            return [value for value in ids if isinstance(value, int) and value >= 1]
+    return []
+
+
 def build_stream_controls(
     hass: HomeAssistant, coordinators: dict[str, Any]
 ) -> list[SelectEntity]:
-    """Return the mode select and the start, end and source select of each plan."""
+    """Return the mode select and the start, stop and source select of each plan."""
     hub = _hub_for(hass, coordinators)
     if hub is None:
         return []
     entities: list[SelectEntity] = [StreamModeSelect(hub)]
-    for plan in PLAN_IDS:
-        entities.extend(StreamPlanSelect(hub, plan, part) for part in ("start", "end", "source"))
+    for plan in _plan_ids(hass, coordinators):
+        entities.extend(
+            StreamPlanSelect(hub, plan, part) for part in ("start", "end", "source")
+        )
     return entities
 
 
@@ -349,4 +352,4 @@ def build_stream_switches(
     hub = _hub_for(hass, coordinators)
     if hub is None:
         return []
-    return [StreamPlanSwitch(hub, plan) for plan in PLAN_IDS]
+    return [StreamPlanSwitch(hub, plan) for plan in _plan_ids(hass, coordinators)]
