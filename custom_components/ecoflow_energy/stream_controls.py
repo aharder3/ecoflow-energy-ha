@@ -19,10 +19,11 @@ it leaves it.
 
 The device numbers its plans across charge and discharge plans, and the vendor
 app does not show those numbers. The entities are therefore named by position:
-the first reported charge plan is "Plan 1", the next "Plan 2"; discharge plans
-are counted the same way as "Discharge plan 1" and so on. Unique IDs keep the
+the first reported charge plan is "Ladeplan 1", the next "Ladeplan 2"; discharge
+plans are counted the same way as "Entladeplan 1" and so on. Unique IDs keep the
 device number, so a name can move when an earlier plan is deleted but no
-entity is replaced.
+entity is replaced. An entity that was registered before keeps its entity id;
+only the displayed name follows.
 
 Changing a plan sends the plan again with the reported values, changing only
 what the user changed, repeat included. Switching a plan on first switches to
@@ -75,7 +76,7 @@ MODE_SWITCH_PAUSE_S = 2.0
 
 KIND_CHARGE = "charge"
 KIND_DISCHARGE = "discharge"
-_PLAN_NAMES = {KIND_CHARGE: "Plan", KIND_DISCHARGE: "Discharge plan"}
+_PLAN_NAMES = {KIND_CHARGE: "Ladeplan", KIND_DISCHARGE: "Entladeplan"}
 _UNIQUE_PREFIX = {KIND_CHARGE: "plan", KIND_DISCHARGE: "discharge"}
 
 MODE_LABELS = {
@@ -374,13 +375,11 @@ class StreamPlanSelect(_StreamPlanEntity, SelectEntity):
             "source": "mdi:transmission-tower-import",
             "repeat": "mdi:calendar-sync",
         }[part]
-        # Entities are listed alphabetically by name, so "stop" keeps the end
-        # select behind "start".
         label = {
-            "start": "start",
-            "end": "stop",
-            "source": "source",
-            "repeat": "repeat",
+            "start": "Start",
+            "end": "Stopp",
+            "source": "Quelle",
+            "repeat": "Wiederholung",
         }[part]
         super().__init__(controls, plan_id, part, label, icon, plan_kind)
         self._part = part
@@ -470,7 +469,7 @@ class StreamPlanDaysText(_StreamPlanEntity, TextEntity):
         self, controls: StreamControls, plan_id: int, plan_kind: str = KIND_CHARGE
     ) -> None:
         super().__init__(
-            controls, plan_id, "days", "days", "mdi:calendar-week", plan_kind
+            controls, plan_id, "days", "Tage", "mdi:calendar-week", plan_kind
         )
 
     @property
@@ -478,7 +477,9 @@ class StreamPlanDaysText(_StreamPlanEntity, TextEntity):
         plan = self._plan
         if plan is None:
             return None
-        return format_days(plan["days"])
+        # A plan that runs once has no weekdays: unknown, not an empty text,
+        # which Home Assistant refuses as shorter than the minimum length.
+        return format_days(plan["days"]) or None
 
     async def async_set_value(self, value: str) -> None:
         days = parse_days(value)
