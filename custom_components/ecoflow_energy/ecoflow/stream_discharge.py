@@ -13,8 +13,9 @@ byte for byte by this encoding:
 
 Field 4 is 1 for a plan that is on and absent for one that is off, as in the
 status report. Field 5 carried the plan's running flag as it was reported
-before the change. A plan that runs once uses field 8 = 0 and a field 9 the
-vendor app chooses; it is only sent back unchanged.
+before the change. A plan that runs once uses field 8 = 4, or 0 once its window
+has passed, and a field 9 the vendor app chooses; it is only sent back
+unchanged.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from .stream_schedule import (
     time_to_slot,
 )
 
-DISCHARGE_REPEAT_KINDS = (0, 1, 2)
+DISCHARGE_REPEAT_KINDS = (0, 1, 2, 4)
 MAX_POWER_W = 10000
 
 

@@ -23,7 +23,8 @@ Repeat, observed from the vendor app's own commands: field 8 equal to 1 with
 field 9 equal to 0 is "daily"; field 8 equal to 2 is "weekly" and field 9 is a
 bit mask of the days (bit 0 Monday to bit 6 Sunday: Mon, Tue, Thu, Sat, Sun is
 107, Mon, Tue, Thu, Fri, Sat is 59, Tue, Wed, Thu, Sat, Sun is 110); field 8
-equal to 4 (charge) or 0 (discharge) is a plan that runs once, and field 9 then
+equal to 4 or 0 is a plan that runs once: 4 was seen while the plan was valid
+and 0 on plans the app showed as invalid, whose window had passed. Field 9 then
 holds a value that changes with the time it was saved, which is not decoded
 here.
 """

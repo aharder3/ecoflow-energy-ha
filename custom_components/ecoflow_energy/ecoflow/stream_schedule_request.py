@@ -24,8 +24,8 @@ SOURCES = (SOURCE_SOLAR, SOURCE_GRID_AND_SOLAR)
 OPERATIONS = {"change": OPERATION_CHANGE, "create": OPERATION_CREATE}
 
 # Field 8 as the vendor app sends it: 1 daily, 2 weekly (field 9 is the day
-# mask), 4 once. Nothing else has been seen on a charge plan.
-REPEAT_KINDS = (1, 2, 4)
+# mask), 4 once, and 0 on a plan that runs once whose window has passed.
+REPEAT_KINDS = (0, 1, 2, 4)
 
 
 def build_schedule_request_frame(
