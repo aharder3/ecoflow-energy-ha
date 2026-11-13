@@ -254,10 +254,13 @@ class StreamPlanSelect(_StreamSelect):
             "end": "mdi:clock-end",
             "source": "mdi:transmission-tower-import",
         }[part]
+        # Entities are listed alphabetically by name, so "stop" keeps the end
+        # select behind "start".
+        label = {"start": "start", "end": "stop", "source": "source"}[part]
         super().__init__(
             controls,
             f"plan{plan}_{part}",
-            f"Plan {plan} {part}",
+            f"Plan {plan} {label}",
             icon,
             list(options),
         )
