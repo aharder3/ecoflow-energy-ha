@@ -17,12 +17,20 @@ them safe to show and to control:
   for one that is switched off, and field 5 equals 1 while the plan's window is
   running. A charge plan carries device targets; a discharge plan (the custom
   discharge of the app) has none, and carries its power in field 12 (790 W in
-  the app matched 790 in that field). Field 8 was 0 for a plan the app showed
-  as "daily" and 4 for plans it showed with a date.
+  the app matched 790 in that field, and 300 W after the app changed it).
+
+Repeat, observed from the vendor app's own commands: field 8 equal to 1 with
+field 9 equal to 0 is "daily"; field 8 equal to 2 is "weekly" and field 9 is a
+bit mask of the days (bit 0 Monday to bit 6 Sunday: Mon, Tue, Thu, Sat, Sun is
+107, Mon, Tue, Thu, Fri, Sat is 59, Tue, Wed, Thu, Sat, Sun is 110); field 8
+equal to 4 (charge) or 0 (discharge) is a plan that runs once, and field 9 then
+holds a value that changes with the time it was saved, which is not decoded
+here.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from .stream_schedule import unpack_window
@@ -31,6 +39,20 @@ _FIELD_OPERATING_MODE = 393
 _FIELD_PLANS = 584
 
 OPERATING_MODES = {1: "self_powered", 2: "custom", 4: "ai"}
+
+DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+REPEAT_DAILY = 1
+REPEAT_WEEKLY = 2
+
+
+def days_to_mask(days: Iterable[str]) -> int:
+    """Return the field-9 bit mask of weekday names (Monday is bit 0)."""
+    return sum(1 << DAY_NAMES.index(day) for day in set(days))
+
+
+def mask_to_days(mask: int) -> list[str]:
+    """Return the weekday names of a field-9 bit mask, Monday first."""
+    return [day for index, day in enumerate(DAY_NAMES) if mask >> index & 1]
 
 
 def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
@@ -111,6 +133,14 @@ def _decode_plan(task: bytes) -> dict[str, Any] | None:
     except ValueError:
         return None
     first = devices[0] if devices else {}
+    repeat_kind = flags.get(8, 0)
+    repeat_value = flags.get(9, 0)
+    if repeat_kind == REPEAT_DAILY:
+        repeat, days = "daily", list(DAY_NAMES)
+    elif repeat_kind == REPEAT_WEEKLY:
+        repeat, days = "weekly", mask_to_days(repeat_value)
+    else:
+        repeat, days = "once", []
     return {
         "id": plan_id,
         "kind": "charge" if devices else "discharge",
@@ -122,7 +152,10 @@ def _decode_plan(task: bytes) -> dict[str, Any] | None:
         "soc": first.get(2),
         "power": first.get(3),
         "discharge_power": flags.get(12) or None,
-        "repeat": "daily" if flags.get(8) == 0 else "dated",
+        "repeat": repeat,
+        "days": days,
+        "repeat_kind": repeat_kind,
+        "repeat_value": repeat_value,
     }
 
 
