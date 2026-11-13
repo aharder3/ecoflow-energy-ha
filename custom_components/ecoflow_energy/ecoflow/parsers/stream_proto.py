@@ -38,9 +38,9 @@ Current field notes from dump analysis:
   AC outlet activity is exposed separately via `ac_outlet_1_w` /
   `ac_outlet_2_w`.
 - `grid_w`, `home_w`, `solar_w`, `sys_grid_connection_power_w`,
-  `home_from_batt_w` and `home_from_grid_w` are system readings. In a group
-  of several units only one unit fills them; the others send 0.0, which is
-  published as None (unknown), see `_SYSTEM_BLOCK_KEYS` (#486).
+  `home_from_batt_w` and `home_from_grid_w` are system readings. In a
+  group of several units only one unit fills them; the others send 0.0,
+  which is published as None (unknown), see `_SYSTEM_BLOCK_KEYS` (#486).
 - `home_w` behaves like the overall active load path. In zero-export
   discharge captures, `home_w` stays aligned with the group discharge power while
   `ac_outlet_1_w` remains a diagnostic breakdown of that total rather
@@ -56,6 +56,9 @@ Current field notes from dump analysis:
   live value never flaps to the slider target on a SET acknowledgement.
   `32/50 field 15` stayed at `100` throughout the dedicated LED capture
   and does not track brightness changes.
+- `254/21 field 393` (the operating mode) and `254/21 field 584` (the plan
+  list) are decoded in `ecoflow/stream_status.py` and arrive as
+  `operating_mode` and `stream_plans`.
 """
 
 from __future__ import annotations
@@ -65,6 +68,7 @@ from math import isfinite
 from typing import Any
 
 from ..proto.decoder import decode_header_message
+from ..stream_status import decode_operating_mode, decode_plans
 
 _TYPE_INT = "int"
 _TYPE_FLOAT = "float"
@@ -351,6 +355,18 @@ def _decode_mapped_fields(
     return result
 
 
+def _decode_status_extras(pdata: bytes) -> dict[str, Any]:
+    """Return the operating mode and the plan list of a status frame, if present."""
+    extras: dict[str, Any] = {}
+    mode = decode_operating_mode(pdata)
+    if mode is not None:
+        extras["operating_mode"] = mode
+    plans = decode_plans(pdata)
+    if plans is not None:
+        extras["stream_plans"] = plans
+    return extras
+
+
 def _finalize_stream_state(parsed: dict[str, Any]) -> dict[str, Any]:
     """Normalize mirrored fields and derive convenience sensor values."""
     result = dict(parsed)
@@ -522,6 +538,8 @@ def parse_stream_proto_message(payload: bytes) -> dict[str, Any] | None:
             for pdata in _pdata_candidates(header):
                 try:
                     decoded = _decode_mapped_fields(pdata, field_map)
+                    if cmd_key == (254, 21):
+                        decoded.update(_decode_status_extras(pdata))
                 except (IndexError, ValueError):
                     # Only a payload that is not valid protobuf falls through
                     # to the next candidate. A clean decode ends the attempt,
