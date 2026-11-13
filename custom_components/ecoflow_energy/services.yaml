@@ -60,6 +60,11 @@ send_stream_schedule:
           options:
             - change
             - create
+    enabled:
+      required: false
+      default: true
+      selector:
+        boolean:
 
 set_stream_mode:
   fields:

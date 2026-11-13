@@ -50,6 +50,9 @@ SEND_STREAM_SCHEDULE_SCHEMA = vol.Schema(
             vol.Coerce(int), vol.Range(min=1)
         ),
         vol.Optional("operation", default="change"): vol.In(tuple(OPERATIONS)),
+        # The app sends flag 4 = 1 for a plan that is switched on and leaves it
+        # out for one that is switched off (observed on plans 2 and 3).
+        vol.Optional("enabled", default=True): cv.boolean,
     }
 )
 
@@ -88,6 +91,7 @@ async def _async_send_stream_schedule(hass: HomeAssistant, call: ServiceCall) ->
             sequence=_next_sequence(),
             timestamp=int(time.time()),
             operation=data["operation"],
+            flag4=1 if data["enabled"] else None,
         )
     except ValueError as err:
         raise ServiceValidationError(str(err)) from err
@@ -98,11 +102,12 @@ async def _async_send_stream_schedule(hass: HomeAssistant, call: ServiceCall) ->
     if not ok:
         raise HomeAssistantError("The broker did not acknowledge the schedule frame")
     _LOGGER.info(
-        "Stream schedule sent: plan %s %s-%s (%s)",
+        "Stream schedule sent: plan %s %s-%s (%s, %s)",
         data["plan_id"],
         data["start"],
         data["end"],
         data["source"],
+        "on" if data["enabled"] else "off",
     )
 
 
