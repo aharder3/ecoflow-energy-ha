@@ -21,6 +21,8 @@ SOURCE_SOLAR = "solar"
 SOURCE_GRID_AND_SOLAR = "grid_and_solar"
 SOURCES = (SOURCE_SOLAR, SOURCE_GRID_AND_SOLAR)
 
+# Create sends operation 1 and change sends 2. The delete operation (3) is
+# deliberately not offered: a service call must not be able to remove a task.
 OPERATIONS = {"change": OPERATION_CHANGE, "create": OPERATION_CREATE}
 
 # Field 8 as the vendor app sends it: 1 daily, 2 weekly (field 9 is the day

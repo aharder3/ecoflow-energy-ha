@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import pytest
 
+from custom_components.ecoflow_energy.ecoflow.stream_schedule import (
+    OPERATION_CHANGE,
+    OPERATION_CREATE,
+    OPERATION_DELETE,
+    ScheduleDevice,
+    build_schedule_frame,
+    build_schedule_task,
+)
 from custom_components.ecoflow_energy.ecoflow.stream_schedule_request import (
+    OPERATIONS,
     build_schedule_request_frame,
 )
 
@@ -38,6 +47,20 @@ CAPTURED_WEEKLY_MON_TUE_THU_FRI_SAT = (
     "0a1058585858585858585858585858585858105f189a081a170a1058585858585858585858585858"
     "585858105f189a0860001020180220012801380340fe014811505558017014800103880101ba0103"
     "696f73ca011058585858585858585858585858585858"
+)
+
+# The next three frames are from one session on the Stream Ultra, serials
+# masked. The app deleted plan 2 (operation 3) and the unit's next report no
+# longer listed it, then created plans 2 and 3 (operation 1) and the report
+# listed both again.
+CAPTURED_DELETE = (
+    "0a8d010a5730efc8dcd7069a254e0a4c1003180220012800400448edaa3f5204a88ad0055a3408011a170a1058585858585858585858585858585858105f189a081a170a1058585858585858585858585858585858105f189a0860001020180220012801380340fe014811505758017047800103880101ba0103696f73ca011058585858585858585858585858585858"
+)
+CAPTURED_CREATE_SOLAR = (
+    "0a8b010a5530fbc8dcd7069a254c0a4a1001180220012800400448edaa3f5204c087d0235a321a170a1058585858585858585858585858585858105f189a081a170a1058585858585858585858585858585858105f189a0860001020180220012801380340fe014811505558017048800103880101ba0103696f73ca011058585858585858585858585858585858"
+)
+CAPTURED_CREATE_GRID = (
+    "0a8d010a573092c9dcd7069a254e0a4c1001180320012800400448edaa3f52048a8a802d5a3408011a170a1058585858585858585858585858585858105f189a081a170a1058585858585858585858585858585858105f189a0860001020180220012801380340fe014811505758017049800103880101ba0103696f73ca011058585858585858585858585858585858"
 )
 
 
@@ -103,11 +126,57 @@ def test_grid_source_adds_exactly_the_grid_marker():
     assert len(grid) == len(solar) + 2  # field 11.1 = 1 is two bytes
 
 
-def test_create_differs_from_change_only_in_operation():
-    change = _frame(operation="change")
-    create = _frame(operation="create")
-    assert len(change) == len(create)
-    assert change != create
+def test_operation_values_are_the_ones_the_unit_acts_on():
+    assert OPERATION_CREATE == 1
+    assert OPERATION_CHANGE == 2
+    assert OPERATION_DELETE == 3
+    assert OPERATIONS == {"change": 2, "create": 1}
+
+
+def test_service_cannot_delete():
+    with pytest.raises(ValueError):
+        _frame(operation="delete")
+
+
+def test_create_request_matches_captured_app_frame_for_solar():
+    frame = _frame(
+        operation="create",
+        plan_id=2,
+        start="16:00",
+        end="19:00",
+        sequence=72,
+        timestamp=1794581627,
+    )
+    assert frame.hex() == CAPTURED_CREATE_SOLAR
+
+
+def test_create_request_matches_captured_app_frame_for_grid_and_solar():
+    frame = _frame(
+        operation="create",
+        plan_id=3,
+        start="21:30",
+        end="24:00",
+        source="grid_and_solar",
+        sequence=73,
+        timestamp=1794581650,
+    )
+    assert frame.hex() == CAPTURED_CREATE_GRID
+
+
+def test_delete_frame_matches_the_captured_app_frame():
+    task = build_schedule_task(
+        operation=OPERATION_DELETE,
+        plan_id=2,
+        start="22:00",
+        end="03:00",
+        devices=[ScheduleDevice(SERIAL, 95, 1050)] * 2,
+        grid=True,
+        flag4=1,
+    )
+    frame = build_schedule_frame(
+        task, sequence=71, device_serial=SERIAL, timestamp=1794581615
+    )
+    assert frame.hex() == CAPTURED_DELETE
 
 
 @pytest.mark.parametrize(

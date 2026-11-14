@@ -7,8 +7,7 @@ vendor app sent to a Stream Ultra (BK11) and a Stream AC Pro (BK31)::
 
     595 {
       1 {                        # one schedule task
-        2:  operation            # 2 = change an existing plan, 3 = create one
-                                 # (observed); 1 also seen, meaning UNKNOWN
+        2:  operation            # 1 = create a task, 2 = change it, 3 = delete it
         3:  plan id              # the same window kept the same id (3, 4)
         4:  flag                 # optional, 1 or absent; meaning UNKNOWN
         5:  flag                 # 0 in nearly all frames; UNKNOWN
@@ -23,6 +22,13 @@ vendor app sent to a Stream Ultra (BK11) and a Stream AC Pro (BK31)::
       }
     }
 
+The operation values were read against the unit's own task list. The app sent
+operation 3 for task 2 and the next report no longer listed it; it then sent
+operation 1 for tasks 2 and 3 and the report listed them again. Operation 2
+changes a task that exists. Earlier versions of this file called 3 "create";
+it deletes. The service offers create and change only. A delete is built by
+the tests alone.
+
 Nothing here is confirmed against vendor documentation. The round-trip tests
 reproduce captured frames byte for byte, which proves the layout of those
 frames and nothing about values the app has not been seen to send.
@@ -34,8 +40,10 @@ from dataclasses import dataclass
 
 from .proto_encoding import encode_field_bytes, encode_field_varint, encode_varint
 
+OPERATION_CREATE = 1
 OPERATION_CHANGE = 2
-OPERATION_CREATE = 3
+# Removes the task. Not offered by the service.
+OPERATION_DELETE = 3
 
 SLOT_MINUTES = 30
 DEFAULT_KIND = 4
